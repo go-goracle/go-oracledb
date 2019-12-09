@@ -1,6 +1,6 @@
 // +build !windows
 
-// Copyright 2017 Tamás Gulácsi
+// Copyright 2019 Tamás Gulácsi
 //
 //
 //    Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,7 +15,7 @@
 //    See the License for the specific language governing permissions and
 //    limitations under the License.
 
-package goracle
+package internal
 
 // #cgo LDFLAGS: -ldl -lpthread
 import "C"

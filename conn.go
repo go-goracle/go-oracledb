@@ -13,13 +13,7 @@
 //    See the License for the specific language governing permissions and
 //    limitations under the License.
 
-package goracle
-
-/*
-#include <stdlib.h>
-#include "dpiImpl.h"
-*/
-import "C"
+package oracledb
 
 import (
 	"context"
