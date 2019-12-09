@@ -118,45 +118,6 @@ type (
 	CdpiData C.dpiData
 )
 
-type varInfo struct {
-	SliceLen, BufSize int
-	ObjectType        *CdpiObjectType
-	NatTyp            CdpiNativeTypeNum
-	Typ               CdpiOracleTypeNum
-	IsPLSArray        bool
-}
-
-func (c *Conn) NewVar(vi varInfo) (*CdpiVar, []CdpiData, error) {
-	if c == nil || c.dpiConn == nil {
-		return nil, nil, errors.New("connection is nil")
-	}
-	isArray := C.int(0)
-	if vi.IsPLSArray {
-		isArray = 1
-	}
-	if vi.SliceLen < 1 {
-		vi.SliceLen = 1
-	}
-	var dataArr *CdpiData
-	var v *CdpiVar
-	if C.dpiConn_newVar(
-		c.dpiConn, (C.dpiOracleTypeNum)(vi.Typ), (C.dpiNativeTypeNum)(vi.NatTyp), C.uint32_t(vi.SliceLen),
-		C.uint32_t(vi.BufSize), 1,
-		isArray, (*C.dpiObjectType)(vi.ObjectType),
-		(**C.dpiVar)(unsafe.Pointer(&v)), (**C.dpiData)(unsafe.Pointer(&dataArr)),
-	) == C.DPI_FAILURE {
-		return nil, nil, errors.Errorf("newVar(typ=%d, natTyp=%d, sliceLen=%d, bufSize=%d): %w", vi.Typ, vi.NatTyp, vi.SliceLen, vi.BufSize, c.Err())
-	}
-	// https://github.com/golang/go/wiki/cgo#Turning_C_arrays_into_Go_slices
-	/*
-		var theCArray *C.YourType = C.getTheArray()
-		length := C.getTheArrayLength()
-		slice := (*[maxArraySize]C.YourType)(unsafe.Pointer(theCArray))[:length:length]
-	*/
-	data := ((*[maxArraySize]CdpiData)(unsafe.Pointer(dataArr)))[:vi.SliceLen:vi.SliceLen]
-	return v, data, nil
-}
-
 func (c *Conn) ServerVersion() (VersionInfo, error) {
 	var version VersionInfo
 	var v C.dpiVersionInfo

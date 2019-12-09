@@ -18,6 +18,7 @@ import (
 type Lob struct {
 	dpiContext *CdpiContext
 	dpiLob     *C.dpiLob
+	IsClob     bool
 }
 
 func (lob *Lob) ReadAt(p []byte, off int64) (int, error) {
@@ -71,10 +72,10 @@ func (c *Conn) NewTempLob(isClob bool) (*Lob, error) {
 		typ = C.DPI_ORACLE_TYPE_CLOB
 	}
 	var dpiLob *C.dpiLob
-	if C.dpiConn_newTempLob((*C.dpiConn)(c.Conn), typ, (**C.dpiLob)(unsafe.Pointer(&dpiLob))) == C.DPI_FAILURE {
+	if C.dpiConn_newTempLob((*C.dpiConn)(c.dpiConn), typ, (**C.dpiLob)(unsafe.Pointer(&dpiLob))) == C.DPI_FAILURE {
 		return nil, c.Err()
 	}
-	return &Lob{dpiLob: dpiLob, dpiContext: c.dpiContext}, nil
+	return &Lob{dpiLob: dpiLob, dpiContext: c.dpiContext, IsClob: isClob}, nil
 }
 
 // Size returns the size of the LOB.

@@ -193,9 +193,9 @@ func (d *CdpiContext) OpenConn(P ConnectionParams) (*Conn, error) {
 	}
 	defer cp.Close()
 
-	conn := &Conn{Ctx: d}
+	conn := &Conn{dpiContext: d}
 	var c C.dpiConn
-	conn.Conn = &c
+	conn.dpiConn = &c
 	if C.dpiConn_create(
 		(*C.dpiContext)(d),
 		cp.Username, C.uint32_t(len(P.Username)),
@@ -203,7 +203,7 @@ func (d *CdpiContext) OpenConn(P ConnectionParams) (*Conn, error) {
 		cp.Sid, C.uint32_t(len(P.SID)),
 		&cp.Common,
 		&cp.Conn,
-		&conn.Conn,
+		&conn.dpiConn,
 	) == C.DPI_FAILURE {
 		return nil, errors.Errorf("username=%q sid=%q params=%+v: %w", P.Username, P.SID, cp.Conn, d.Err())
 	}
@@ -211,8 +211,8 @@ func (d *CdpiContext) OpenConn(P ConnectionParams) (*Conn, error) {
 }
 
 type Pool struct {
-	Ctx  *CdpiContext
-	Pool *C.dpiPool
+	dpiContext *CdpiContext
+	dpiPool    *C.dpiPool
 }
 
 func (d *CdpiContext) CreatePool(P ConnectionParams) (*Pool, error) {
@@ -270,7 +270,7 @@ func (d *CdpiContext) CreatePool(P ConnectionParams) (*Pool, error) {
 	commonCreateParams.driverNameLength = C.uint32_t(len(DriverName))
 
 	var p C.dpiPool
-	pool := &Pool{Ctx: d, Pool: &p}
+	pool := &Pool{dpiContext: d, dpiPool: &p}
 	if C.dpiPool_create(
 		(*C.dpiContext)(d),
 		cp.Username, C.uint32_t(len(P.Username)),
@@ -278,12 +278,12 @@ func (d *CdpiContext) CreatePool(P ConnectionParams) (*Pool, error) {
 		cp.Sid, C.uint32_t(len(P.SID)),
 		&cp.Common,
 		&poolCreateParams,
-		&pool.Pool,
+		&pool.dpiPool,
 	) == C.DPI_FAILURE {
 		return nil, errors.Errorf("params=%s extAuth=%v: %w", P.String(), cp.ExtAuth, d.Err())
 	}
 	if P.StatementCacheSize > 0 {
-		C.dpiPool_setStmtCacheSize(pool.Pool, C.uint(P.StatementCacheSize))
+		C.dpiPool_setStmtCacheSize(pool.dpiPool, C.uint(P.StatementCacheSize))
 	}
 
 	return pool, nil
@@ -291,7 +291,7 @@ func (d *CdpiContext) CreatePool(P ConnectionParams) (*Pool, error) {
 
 func (dp *Pool) AcquireConn(d CdpiContext, user, pass string) (*Conn, error) {
 	var connCreateParams C.dpiConnCreateParams
-	if C.dpiContext_initConnCreateParams((*C.dpiContext)(dp.Ctx), &connCreateParams) == C.DPI_FAILURE {
+	if C.dpiContext_initConnCreateParams((*C.dpiContext)(dp.dpiContext), &connCreateParams) == C.DPI_FAILURE {
 		return nil, errors.Errorf("initConnCreateParams: %w", "", d.Err())
 	}
 
@@ -312,12 +312,12 @@ func (dp *Pool) AcquireConn(d CdpiContext, user, pass string) (*Conn, error) {
 	}
 
 	var c C.dpiConn
-	conn := &Conn{Ctx: dp.Ctx, Conn: &c}
+	conn := &Conn{dpiContext: dp.dpiContext, dpiConn: &c}
 	if C.dpiPool_acquireConnection(
-		dp.Pool,
+		dp.dpiPool,
 		cUserName, C.uint32_t(len(user)), cPassword, C.uint32_t(len(pass)),
 		&connCreateParams,
-		(**C.dpiConn)(unsafe.Pointer(&conn.Conn)),
+		(**C.dpiConn)(unsafe.Pointer(&conn.dpiConn)),
 	) == C.DPI_FAILURE {
 		return nil, errors.Errorf("acquirePoolConnection: %w", d.Err())
 	}
