@@ -1,17 +1,6 @@
-// Copyright 2017 Tamás Gulácsi
+// Copyright 2019 Tamás Gulácsi
 //
-//
-//    Licensed under the Apache License, Version 2.0 (the "License");
-//    you may not use this file except in compliance with the License.
-//    You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-//    Unless required by applicable law or agreed to in writing, software
-//    distributed under the License is distributed on an "AS IS" BASIS,
-//    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-//    See the License for the specific language governing permissions and
-//    limitations under the License.
+// SPDX-License-Identifier: UPL-1.0
 
 package oracledb
 
@@ -30,6 +19,7 @@ import (
 	"io"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -71,8 +61,7 @@ func (o stmtOptions) FetchRowCount() int {
 }
 func (o stmtOptions) PlSQLArrays() bool { return o.plSQLArrays }
 
-func (o stmtOptions) ClobAsString() bool { return !o.lobAsReader }
-func (o stmtOptions) LobAsReader() bool  { return o.lobAsReader }
+func (o stmtOptions) LobAsReader() bool { return o.lobAsReader }
 
 func (o stmtOptions) MagicTypeConversion() bool { return o.magicTypeConversion }
 func (o stmtOptions) NumberAsString() bool      { return o.numberAsString }
@@ -107,11 +96,6 @@ func ParseOnly() Option {
 }
 
 func describeOnly(o *stmtOptions) { o.execMode = C.DPI_MODE_EXEC_DESCRIBE_ONLY }
-
-// ClobAsString returns an option to force fetching CLOB columns as strings.
-//
-// DEPRECATED.
-func ClobAsString() Option { return func(o *stmtOptions) { o.lobAsReader = false } }
 
 // LobAsReader is an option to set query columns of CLOB/BLOB to be returned as a Lob.
 //
@@ -2075,4 +2059,24 @@ type Column struct {
 	Precision                 C.int16_t
 	Scale                     C.int8_t
 	Nullable                  bool
+}
+
+func dpiSetFromString(dv *C.dpiVar, pos C.uint32_t, x string) {
+	C.goracle_setFromString(dv, pos, x)
+}
+
+var stringBuilders = stringBuilderPool{
+	p: &sync.Pool{New: func() interface{} { return &strings.Builder{} }},
+}
+
+type stringBuilderPool struct {
+	p *sync.Pool
+}
+
+func (sb stringBuilderPool) Get() *strings.Builder {
+	return sb.p.Get().(*strings.Builder)
+}
+func (sb *stringBuilderPool) Put(b *strings.Builder) {
+	b.Reset()
+	sb.p.Put(b)
 }
