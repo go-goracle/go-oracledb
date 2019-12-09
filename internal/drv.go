@@ -504,7 +504,7 @@ func ParseConnString(connString string) (ConnectionParams, error) {
 			if P.Timezone, err = time.LoadLocation(tz); err != nil {
 				return P, errors.Errorf("%s: %w", tz, err)
 			}
-		} else if off, err := parseTZ(tz); err == nil {
+		} else if off, err := ParseTZ(tz); err == nil {
 			P.Timezone = time.FixedZone(tz, off)
 		} else {
 			return P, errors.Errorf("%s: %w", tz, err)
@@ -689,7 +689,7 @@ func b2i(b bool) int {
 	}
 	return 0
 }
-func parseTZ(s string) (int, error) {
+func ParseTZ(s string) (int, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, io.EOF

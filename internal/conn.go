@@ -27,6 +27,7 @@ const maxArraySize = (1<<32)/C.sizeof_dpiSubscrMessageTable - 1
 type Conn struct {
 	dpiContext *CdpiContext
 	dpiConn    *C.dpiConn
+	TimeZone   *time.Location
 }
 
 func (c *Conn) Err() error {

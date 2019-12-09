@@ -16,6 +16,8 @@ import (
 	"unsafe"
 
 	errors "golang.org/x/xerrors"
+
+	"github.com/go-goracle/go-oracledb/internal"
 )
 
 const getConnection = "--GET_CONNECTION--"
@@ -28,27 +30,32 @@ var _ = driver.Pinger((*conn)(nil))
 
 //var _ = driver.ExecerContext((*conn)(nil))
 
+type (
+	ConnectionParams = internal.ConnectionParams
+	ObjectType       = internal.ObjectType
+	TraceTag         = internal.TraceTag
+)
+
 type conn struct {
 	connParams     ConnectionParams
 	currentTT      TraceTag
-	Client, Server VersionInfo
+	Client, Server internal.VersionInfo
 	tranParams     tranParams
 	sync.RWMutex
 	currentUser string
 	*drv
-	dpiConn       *C.dpiConn
+	iConn         *internal.Conn
 	inTransaction bool
 	newSession    bool
-	timeZone      *time.Location
 	tzOffSecs     int
 	objTypes      map[string]ObjectType
 }
 
-func (c *conn) getError() error {
+func (c *conn) Err() error {
 	if c == nil || c.drv == nil {
 		return driver.ErrBadConn
 	}
-	return c.drv.getError()
+	return c.drv.Err()
 }
 
 func (c *conn) Break() error {
@@ -57,10 +64,7 @@ func (c *conn) Break() error {
 	if Log != nil {
 		Log("msg", "Break", "dpiConn", c.dpiConn)
 	}
-	if C.dpiConn_breakExecution(c.dpiConn) == C.DPI_FAILURE {
-		return maybeBadConn(errors.Errorf("Break: %w", c.getError()), c)
-	}
-	return nil
+	return maybeBadConn(c.iConn.Break())
 }
 
 // Ping checks the connection's state.
@@ -81,12 +85,7 @@ func (c *conn) Ping(ctx context.Context) error {
 	done := make(chan error, 1)
 	go func() {
 		defer close(done)
-		failure := C.dpiConn_ping(c.dpiConn) == C.DPI_FAILURE
-		if failure {
-			done <- maybeBadConn(errors.Errorf("Ping: %w", c.getError()), c)
-			return
-		}
-		done <- nil
+		done <- c.iConn.Ping()
 	}()
 
 	select {
@@ -131,13 +130,13 @@ func (c *conn) close(doNotReuse bool) error {
 	if c == nil {
 		return nil
 	}
-	c.setTraceTag(TraceTag{})
-	dpiConn, objTypes := c.dpiConn, c.objTypes
-	c.dpiConn, c.objTypes = nil, nil
-	if dpiConn == nil {
+	c.iConn.SetTraceTag(TraceTag{})
+	iConn, objTypes := c.iConn, c.objTypes
+	c.iConn, c.objTypes = nil, nil
+	if iConn == nil {
 		return nil
 	}
-	defer C.dpiConn_release(dpiConn)
+	defer iConn.Release()
 
 	seen := make(map[string]struct{}, len(objTypes))
 	for _, o := range objTypes {
@@ -161,10 +160,10 @@ func (c *conn) close(doNotReuse bool) error {
 			if Log != nil {
 				Log("msg", "TIMEOUT releasing connection")
 			}
-			C.dpiConn_breakExecution(dpiConn)
+			iConn.Break()
 		}
 	}()
-	C.dpiConn_close(dpiConn, C.DPI_MODE_CONN_CLOSE_DROP, nil, 0)
+	iConn.Close()
 	close(done)
 	return nil
 }
@@ -296,10 +295,10 @@ func (c *conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 	return &statement{conn: c, dpiStmt: dpiStmt, query: query}, nil
 }
 func (c *conn) Commit() error {
-	return c.endTran(true)
+	return c.iConn.Commit()
 }
 func (c *conn) Rollback() error {
-	return c.endTran(false)
+	return c.iConn.Rollback()
 }
 func (c *conn) endTran(isCommit bool) error {
 	c.Lock()
@@ -309,60 +308,12 @@ func (c *conn) endTran(isCommit bool) error {
 	var err error
 	//msg := "Commit"
 	if isCommit {
-		if C.dpiConn_commit(c.dpiConn) == C.DPI_FAILURE {
-			err = maybeBadConn(errors.Errorf("Commit: %w", c.getError()), c)
-		}
+		err = c.iConn.Commit()
 	} else {
-		//msg = "Rollback"
-		if C.dpiConn_rollback(c.dpiConn) == C.DPI_FAILURE {
-			err = maybeBadConn(errors.Errorf("Rollback: %w", c.getError()), c)
-		}
+		err = c.iConn.Rollback()
 	}
 	c.Unlock()
-	//fmt.Printf("%p.%s\n", c, msg)
 	return err
-}
-
-type varInfo struct {
-	SliceLen, BufSize int
-	ObjectType        *C.dpiObjectType
-	NatTyp            C.dpiNativeTypeNum
-	Typ               C.dpiOracleTypeNum
-	IsPLSArray        bool
-}
-
-func (c *conn) newVar(vi varInfo) (*C.dpiVar, []C.dpiData, error) {
-	if c == nil || c.dpiConn == nil {
-		return nil, nil, errors.New("connection is nil")
-	}
-	isArray := C.int(0)
-	if vi.IsPLSArray {
-		isArray = 1
-	}
-	if vi.SliceLen < 1 {
-		vi.SliceLen = 1
-	}
-	var dataArr *C.dpiData
-	var v *C.dpiVar
-	if Log != nil {
-		Log("C", "dpiConn_newVar", "conn", c.dpiConn, "typ", int(vi.Typ), "natTyp", int(vi.NatTyp), "sliceLen", vi.SliceLen, "bufSize", vi.BufSize, "isArray", isArray, "objType", vi.ObjectType, "v", v)
-	}
-	if C.dpiConn_newVar(
-		c.dpiConn, vi.Typ, vi.NatTyp, C.uint32_t(vi.SliceLen),
-		C.uint32_t(vi.BufSize), 1,
-		isArray, vi.ObjectType,
-		&v, &dataArr,
-	) == C.DPI_FAILURE {
-		return nil, nil, errors.Errorf("newVar(typ=%d, natTyp=%d, sliceLen=%d, bufSize=%d): %w", vi.Typ, vi.NatTyp, vi.SliceLen, vi.BufSize, c.getError())
-	}
-	// https://github.com/golang/go/wiki/cgo#Turning_C_arrays_into_Go_slices
-	/*
-		var theCArray *C.YourType = C.getTheArray()
-		length := C.getTheArrayLength()
-		slice := (*[maxArraySize]C.YourType)(unsafe.Pointer(theCArray))[:length:length]
-	*/
-	data := ((*[maxArraySize]C.dpiData)(unsafe.Pointer(dataArr)))[:vi.SliceLen:vi.SliceLen]
-	return v, data, nil
 }
 
 var _ = driver.Tx((*conn)(nil))
@@ -379,28 +330,19 @@ func (c *conn) init() error {
 		}
 	}
 	if c.Server.Version == 0 {
-		var v C.dpiVersionInfo
-		var release *C.char
-		var releaseLen C.uint32_t
-		if C.dpiConn_getServerVersion(c.dpiConn, &release, &releaseLen, &v) == C.DPI_FAILURE {
-			if c.connParams.IsPrelim {
-				return nil
-			}
-			return errors.Errorf("getServerVersion: %w", c.getError())
+		var err error
+		if c.Server, err = c.iConn.ServerVersion(); err != nil {
+			return err
 		}
-		c.Server.set(&v)
-		c.Server.ServerRelease = string(bytesReplaceAll(
-			((*[maxArraySize]byte)(unsafe.Pointer(release)))[:releaseLen:releaseLen],
-			[]byte{'\n'}, []byte{';', ' '}))
 	}
 
-	if c.timeZone != nil && (c.timeZone != time.Local || c.tzOffSecs != 0) {
+	if c.TimeZone != nil && (c.TimeZone != time.Local || c.tzOffSecs != 0) {
 		return nil
 	}
-	c.timeZone = time.Local
-	_, c.tzOffSecs = time.Now().In(c.timeZone).Zone()
+	c.TimeZone = time.Local
+	_, c.tzOffSecs = time.Now().In(c.TimeZone).Zone()
 	if Log != nil {
-		Log("tz", c.timeZone, "offSecs", c.tzOffSecs)
+		Log("tz", c.TimeZone, "offSecs", c.tzOffSecs)
 	}
 
 	// DBTIMEZONE is useless, false, and misdirecting!
@@ -436,7 +378,7 @@ func (c *conn) init() error {
 	if err != nil || tz == nil {
 		return err
 	}
-	c.timeZone, c.tzOffSecs = tz, off
+	c.TimeZone, c.tzOffSecs = tz, off
 
 	return nil
 }
@@ -478,59 +420,17 @@ func calculateTZ(dbTZ, timezone string) (*time.Location, int, error) {
 	}
 	return tz, off, nil
 }
-func parseTZ(s string) (int, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, io.EOF
-	}
-	if s == "Z" || s == "UTC" {
-		return 0, nil
-	}
-	var tz int
-	var ok bool
-	if i := strings.IndexByte(s, ':'); i >= 0 {
-		if i64, err := strconv.ParseInt(s[i+1:], 10, 6); err != nil {
-			return tz, errors.Errorf("%s: %w", s, err)
-		} else {
-			tz = int(i64 * 60)
-		}
-		s = s[:i]
-		ok = true
-	}
-	if !ok {
-		if i := strings.IndexByte(s, '/'); i >= 0 {
-			targetLoc, err := time.LoadLocation(s)
-			if err != nil {
-				return tz, errors.Errorf("%s: %w", s, err)
-			}
-
-			_, localOffset := time.Now().In(targetLoc).Zone()
-
-			tz = localOffset
-			return tz, nil
-		}
-	}
-	if i64, err := strconv.ParseInt(s, 10, 5); err != nil {
-		return tz, errors.Errorf("%s: %w", s, err)
-	} else {
-		if i64 < 0 {
-			tz = -tz
-		}
-		tz += int(i64 * 3600)
-	}
-	return tz, nil
-}
 
 func (c *conn) setCallTimeout(ctx context.Context) {
 	if c.Client.Version < 18 {
 		return
 	}
-	var ms C.uint32_t
+	var dur time.Duration
 	if dl, ok := ctx.Deadline(); ok {
-		ms = C.uint32_t(time.Until(dl) / time.Millisecond)
+		dur - time.Until(dl)
 	}
 	// force it to be 0 (disabled)
-	C.dpiConn_setCallTimeout(c.dpiConn, ms)
+	c.iConn.SetCallTimeout(dur)
 }
 
 // maybeBadConn checks whether the error is because of a bad connection, and returns driver.ErrBadConn,
@@ -607,43 +507,18 @@ func maybeBadConn(err error, c *conn) error {
 }
 
 func (c *conn) setTraceTag(tt TraceTag) error {
-	if c == nil || c.dpiConn == nil {
+	if c == nil || c.iConn == nil {
 		return nil
 	}
-	for nm, vv := range map[string][2]string{
-		"action":     {c.currentTT.Action, tt.Action},
-		"module":     {c.currentTT.Module, tt.Module},
-		"info":       {c.currentTT.ClientInfo, tt.ClientInfo},
-		"identifier": {c.currentTT.ClientIdentifier, tt.ClientIdentifier},
-		"op":         {c.currentTT.DbOp, tt.DbOp},
-	} {
-		if vv[0] == vv[1] {
-			continue
-		}
-		v := vv[1]
-		var s *C.char
-		if v != "" {
-			s = C.CString(v)
-		}
-		var rc C.int
-		switch nm {
-		case "action":
-			rc = C.dpiConn_setAction(c.dpiConn, s, C.uint32_t(len(v)))
-		case "module":
-			rc = C.dpiConn_setModule(c.dpiConn, s, C.uint32_t(len(v)))
-		case "info":
-			rc = C.dpiConn_setClientInfo(c.dpiConn, s, C.uint32_t(len(v)))
-		case "identifier":
-			rc = C.dpiConn_setClientIdentifier(c.dpiConn, s, C.uint32_t(len(v)))
-		case "op":
-			rc = C.dpiConn_setDbOp(c.dpiConn, s, C.uint32_t(len(v)))
-		}
-		if s != nil {
-			C.free(unsafe.Pointer(s))
-		}
-		if rc == C.DPI_FAILURE {
-			return errors.Errorf("%s: %w", nm, c.getError())
-		}
+	if c.currentTT.Action == tt.Action &&
+		c.currentTT.Module == tt.Module &&
+		c.currentTT.ClientInfo == tt.ClientInfo &&
+		c.currentTT.ClientIdentifier == tt.ClientIdentifier &&
+		c.currentTT.DbOp == tt.DbOp {
+		return nil
+	}
+	if err := c.iConn.SetTraceTag(tt); err != nil {
+		return err
 	}
 	c.currentTT = tt
 	return nil
@@ -708,15 +583,15 @@ func (c *conn) ensureContextUser(ctx context.Context) error {
 }
 
 // StartupMode for the database.
-type StartupMode C.dpiStartupMode
+type StartupMode = internal.StartupMode
 
 const (
 	// StartupDefault is the default mode for startup which permits database access to all users.
-	StartupDefault = StartupMode(C.DPI_MODE_STARTUP_DEFAULT)
+	StartupDefault = internal.StartupDefault
 	// StartupForce shuts down a running instance (using ABORT) before starting a new one. This mode should only be used in unusual circumstances.
-	StartupForce = StartupMode(C.DPI_MODE_STARTUP_FORCE)
+	StartupForce = internal.StartupForce
 	// StartupRestrict only allows database access to users with both the CREATE SESSION and RESTRICTED SESSION privileges (normally the DBA).
-	StartupRestrict = StartupMode(C.DPI_MODE_STARTUP_RESTRICT)
+	StartupRestrict = internal.StartupRestrict
 )
 
 // Startup the database, equivalent to "startup nomount" in SQL*Plus.
@@ -724,28 +599,25 @@ const (
 //
 // See https://docs.oracle.com/en/database/oracle/oracle-database/18/lnoci/database-startup-and-shutdown.html#GUID-44B24F65-8C24-4DF3-8FBF-B896A4D6F3F3
 func (c *conn) Startup(mode StartupMode) error {
-	if C.dpiConn_startupDatabase(c.dpiConn, C.dpiStartupMode(mode)) == C.DPI_FAILURE {
-		return errors.Errorf("startup(%v): %w", mode, c.getError())
-	}
-	return nil
+	return c.iConn.StartupDatabase(mode)
 }
 
 // ShutdownMode for the database.
-type ShutdownMode C.dpiShutdownMode
+type ShutdownMode = internal.ShutdownMode
 
 const (
 	// ShutdownDefault - further connections to the database are prohibited. Wait for users to disconnect from the database.
-	ShutdownDefault = ShutdownMode(C.DPI_MODE_SHUTDOWN_DEFAULT)
+	ShutdownDefault = internal.ShutdownDefault
 	// ShutdownTransactional - further connections to the database are prohibited and no new transactions are allowed to be started. Wait for active transactions to complete.
-	ShutdownTransactional = ShutdownMode(C.DPI_MODE_SHUTDOWN_TRANSACTIONAL)
+	ShutdownTransactional = internal.ShutdownTransactional
 	// ShutdownTransactionalLocal - behaves the same way as ShutdownTransactional but only waits for local transactions to complete.
-	ShutdownTransactionalLocal = ShutdownMode(C.DPI_MODE_SHUTDOWN_TRANSACTIONAL_LOCAL)
+	ShutdownTransactionalLocal = internal.ShutdownTransactionalLocal
 	// ShutdownImmediate - all uncommitted transactions are terminated and rolled back and all connections to the database are closed immediately.
-	ShutdownImmediate = ShutdownMode(C.DPI_MODE_SHUTDOWN_IMMEDIATE)
+	ShutdownImmediate = internal.ShutdownImmediate
 	// ShutdownAbort - all uncommitted transactions are terminated and are not rolled back. This is the fastest way to shut down the database but the next database startup may require instance recovery.
-	ShutdownAbort = ShutdownMode(C.DPI_MODE_SHUTDOWN_ABORT)
+	ShutdownAbort = internal.ShutdownAbort
 	// ShutdownFinal shuts down the database. This mode should only be used in the second call to dpiConn_shutdownDatabase().
-	ShutdownFinal = ShutdownMode(C.DPI_MODE_SHUTDOWN_FINAL)
+	ShutdownFinal = internal.ShutdownFinal
 )
 
 // Shutdown shuts down the database.
@@ -753,10 +625,7 @@ const (
 //
 // See https://docs.oracle.com/en/database/oracle/oracle-database/18/lnoci/database-startup-and-shutdown.html#GUID-44B24F65-8C24-4DF3-8FBF-B896A4D6F3F3
 func (c *conn) Shutdown(mode ShutdownMode) error {
-	if C.dpiConn_shutdownDatabase(c.dpiConn, C.dpiShutdownMode(mode)) == C.DPI_FAILURE {
-		return errors.Errorf("shutdown(%v): %w", mode, c.getError())
-	}
-	return nil
+	return c.iConn.ShutdownDatabase(mode)
 }
 
 // Timezone returns the connection's timezone.

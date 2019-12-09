@@ -4,6 +4,10 @@
 
 package oracledb
 
+/*
+#include "dpiImpl.h"
+*/
+import "C"
 import (
 	"bytes"
 	"database/sql/driver"
@@ -16,8 +20,6 @@ import (
 	"unsafe"
 
 	errors "golang.org/x/xerrors"
-
-	"github.com/go-goracle/go-oracledb/internal"
 )
 
 var _ = driver.Rows((*rows)(nil))

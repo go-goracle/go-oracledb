@@ -5,7 +5,6 @@
 package oracledb
 
 import (
-	//"fmt"
 	"io"
 	"unicode/utf8"
 	"unsafe"
@@ -64,8 +63,8 @@ var _ = io.Reader((*dpiLobReader)(nil))
 
 type dpiLobReader struct {
 	*conn
-	dpiLob              *C.dpiLob
-	offset, sizePlusOne C.uint64_t
+	dpiLob              *internal.Lob
+	offset, sizePlusOne uint64
 	finished            bool
 	IsClob              bool
 }
