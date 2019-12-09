@@ -25,19 +25,19 @@ import (
 const maxArraySize = (1<<32)/C.sizeof_dpiSubscrMessageTable - 1
 
 type Conn struct {
-	Ctx  *CdpiContext
-	Conn *C.dpiConn
+	dpiContext *CdpiContext
+	dpiConn    *C.dpiConn
 }
 
 func (c *Conn) Err() error {
-	if c == nil || c.Ctx == nil {
+	if c == nil || c.dpiContext == nil {
 		return nil
 	}
-	return c.Ctx.Err()
+	return c.dpiContext.Err()
 }
 
 func (c *Conn) Break() error {
-	if C.dpiConn_breakExecution(c.Conn) == C.DPI_FAILURE {
+	if C.dpiConn_breakExecution(c.dpiConn) == C.DPI_FAILURE {
 		return c.Err()
 	}
 	return nil
@@ -45,7 +45,7 @@ func (c *Conn) Break() error {
 
 // Ping checks the connection's state.
 func (c *Conn) Ping() error {
-	if C.dpiConn_ping(c.Conn) == C.DPI_FAILURE {
+	if C.dpiConn_ping(c.dpiConn) == C.DPI_FAILURE {
 		return errors.Errorf("Ping: %w", c.Err())
 	}
 	return nil
@@ -55,8 +55,8 @@ func (c *Conn) Release() error {
 	if c == nil {
 		return nil
 	}
-	dpiConn := c.Conn
-	c.Conn = nil
+	dpiConn := c.dpiConn
+	c.dpiConn = nil
 	if dpiConn == nil {
 		return nil
 	}
@@ -70,11 +70,11 @@ func (c *Conn) Release() error {
 // prepared statements and transactions, marking this
 // connection as no longer in use.
 func (c *Conn) Close() error {
-	if c == nil || c.Conn == nil {
+	if c == nil || c.dpiConn == nil {
 		return nil
 	}
 	defer c.Release()
-	if C.dpiConn_close(c.Conn, C.DPI_MODE_CONN_CLOSE_DROP, nil, 0) == C.DPI_FAILURE {
+	if C.dpiConn_close(c.dpiConn, C.DPI_MODE_CONN_CLOSE_DROP, nil, 0) == C.DPI_FAILURE {
 		return c.Err()
 	}
 	return nil
@@ -88,7 +88,7 @@ func (c *Conn) PrepareStmt(query string) (*CdpiStmt, error) {
 	defer C.free(unsafe.Pointer(cSQL))
 	var stmt CdpiStmt
 	dpiStmt := &stmt
-	if C.dpiConn_prepareStmt(c.Conn, 0, cSQL, C.uint32_t(len(query)), nil, 0,
+	if C.dpiConn_prepareStmt(c.dpiConn, 0, cSQL, C.uint32_t(len(query)), nil, 0,
 		(**C.dpiStmt)(unsafe.Pointer(&dpiStmt)),
 	) == C.DPI_FAILURE {
 		return nil, errors.Errorf("Prepare: %s: %w", query, c.Err())
@@ -96,14 +96,14 @@ func (c *Conn) PrepareStmt(query string) (*CdpiStmt, error) {
 	return dpiStmt, nil
 }
 func (c *Conn) Commit() error {
-	if C.dpiConn_commit(c.Conn) == C.DPI_FAILURE {
+	if C.dpiConn_commit(c.dpiConn) == C.DPI_FAILURE {
 		return c.Err()
 	}
 	return nil
 }
 
 func (c *Conn) Rollback() error {
-	if C.dpiConn_rollback(c.Conn) == C.DPI_FAILURE {
+	if C.dpiConn_rollback(c.dpiConn) == C.DPI_FAILURE {
 		return c.Err()
 	}
 	return nil
@@ -127,7 +127,7 @@ type varInfo struct {
 }
 
 func (c *Conn) NewVar(vi varInfo) (*CdpiVar, []CdpiData, error) {
-	if c == nil || c.Conn == nil {
+	if c == nil || c.dpiConn == nil {
 		return nil, nil, errors.New("connection is nil")
 	}
 	isArray := C.int(0)
@@ -140,7 +140,7 @@ func (c *Conn) NewVar(vi varInfo) (*CdpiVar, []CdpiData, error) {
 	var dataArr *CdpiData
 	var v *CdpiVar
 	if C.dpiConn_newVar(
-		c.Conn, (C.dpiOracleTypeNum)(vi.Typ), (C.dpiNativeTypeNum)(vi.NatTyp), C.uint32_t(vi.SliceLen),
+		c.dpiConn, (C.dpiOracleTypeNum)(vi.Typ), (C.dpiNativeTypeNum)(vi.NatTyp), C.uint32_t(vi.SliceLen),
 		C.uint32_t(vi.BufSize), 1,
 		isArray, (*C.dpiObjectType)(vi.ObjectType),
 		(**C.dpiVar)(unsafe.Pointer(&v)), (**C.dpiData)(unsafe.Pointer(&dataArr)),
@@ -162,7 +162,7 @@ func (c *Conn) ServerVersion() (VersionInfo, error) {
 	var v C.dpiVersionInfo
 	var release *C.char
 	var releaseLen C.uint32_t
-	if C.dpiConn_getServerVersion(c.Conn, &release, &releaseLen, &v) == C.DPI_FAILURE {
+	if C.dpiConn_getServerVersion(c.dpiConn, &release, &releaseLen, &v) == C.DPI_FAILURE {
 		return version, c.Err()
 	}
 	version.set(&v)
@@ -174,14 +174,14 @@ func (c *Conn) ServerVersion() (VersionInfo, error) {
 
 func (c *Conn) SetCallTimeout(dur time.Duration) error {
 	ms := C.uint32_t(dur / time.Millisecond)
-	if C.dpiConn_setCallTimeout(c.Conn, ms) == C.DPI_FAILURE {
+	if C.dpiConn_setCallTimeout(c.dpiConn, ms) == C.DPI_FAILURE {
 		return c.Err()
 	}
 	return nil
 }
 
 func (c *Conn) SetTraceTag(tt TraceTag) error {
-	if c == nil || c.Conn == nil {
+	if c == nil || c.dpiConn == nil {
 		return nil
 	}
 	for nm, v := range map[string]string{
@@ -198,15 +198,15 @@ func (c *Conn) SetTraceTag(tt TraceTag) error {
 		var rc C.int
 		switch nm {
 		case "action":
-			rc = C.dpiConn_setAction(c.Conn, s, C.uint32_t(len(v)))
+			rc = C.dpiConn_setAction(c.dpiConn, s, C.uint32_t(len(v)))
 		case "module":
-			rc = C.dpiConn_setModule(c.Conn, s, C.uint32_t(len(v)))
+			rc = C.dpiConn_setModule(c.dpiConn, s, C.uint32_t(len(v)))
 		case "info":
-			rc = C.dpiConn_setClientInfo(c.Conn, s, C.uint32_t(len(v)))
+			rc = C.dpiConn_setClientInfo(c.dpiConn, s, C.uint32_t(len(v)))
 		case "identifier":
-			rc = C.dpiConn_setClientIdentifier(c.Conn, s, C.uint32_t(len(v)))
+			rc = C.dpiConn_setClientIdentifier(c.dpiConn, s, C.uint32_t(len(v)))
 		case "op":
-			rc = C.dpiConn_setDbOp(c.Conn, s, C.uint32_t(len(v)))
+			rc = C.dpiConn_setDbOp(c.dpiConn, s, C.uint32_t(len(v)))
 		}
 		if s != nil {
 			C.free(unsafe.Pointer(s))
@@ -250,7 +250,7 @@ const (
 //
 // See https://docs.oracle.com/en/database/oracle/oracle-database/18/lnoci/database-startup-and-shutdown.html#GUID-44B24F65-8C24-4DF3-8FBF-B896A4D6F3F3
 func (c *Conn) Startup(mode StartupMode) error {
-	if C.dpiConn_startupDatabase(c.Conn, C.dpiStartupMode(mode)) == C.DPI_FAILURE {
+	if C.dpiConn_startupDatabase(c.dpiConn, C.dpiStartupMode(mode)) == C.DPI_FAILURE {
 		return errors.Errorf("startup(%v): %w", mode, c.Err())
 	}
 	return nil
@@ -279,7 +279,7 @@ const (
 //
 // See https://docs.oracle.com/en/database/oracle/oracle-database/18/lnoci/database-startup-and-shutdown.html#GUID-44B24F65-8C24-4DF3-8FBF-B896A4D6F3F3
 func (c *Conn) Shutdown(mode ShutdownMode) error {
-	if C.dpiConn_shutdownDatabase(c.Conn, C.dpiShutdownMode(mode)) == C.DPI_FAILURE {
+	if C.dpiConn_shutdownDatabase(c.dpiConn, C.dpiShutdownMode(mode)) == C.DPI_FAILURE {
 		return errors.Errorf("shutdown(%v): %w", mode, c.Err())
 	}
 	return nil

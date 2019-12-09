@@ -4,11 +4,6 @@
 
 package oracledb
 
-/*
-#include <stdlib.h>
-#include "dpiImpl.h"
-*/
-import "C"
 import (
 	"context"
 	"fmt"
@@ -17,6 +12,8 @@ import (
 	"unsafe"
 
 	errors "golang.org/x/xerrors"
+
+	"github.com/go-goracle/go-oracledb/internal"
 )
 
 var _ = fmt.Printf
